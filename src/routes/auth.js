@@ -55,6 +55,18 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Name, email, and password are required.' });
     }
 
+    // Check if self-registration is enabled
+    try {
+      const settingResult = await pool.query(
+        "SELECT value FROM system_settings WHERE key = 'self_registration'"
+      );
+      if (settingResult.rows.length > 0 && settingResult.rows[0].value === 'false') {
+        return res.status(403).json({ error: 'Self-registration is disabled. Contact an administrator.' });
+      }
+    } catch (settingErr) {
+      // If table doesn't exist or query fails, allow registration (backward compatibility)
+    }
+
     // Check if user already exists
     const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existingUser.rows.length > 0) {

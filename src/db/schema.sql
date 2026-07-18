@@ -14,7 +14,7 @@ CREATE TABLE users (
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'Analyst',
+    role TEXT DEFAULT 'Analyst' CHECK (role IN ('Admin', 'Analyst', 'Viewer')),
     status TEXT DEFAULT 'Active',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -37,3 +37,15 @@ CREATE TABLE scraping_queue (
 -- Create partial index on created_at WHERE status = 'PENDING'
 CREATE INDEX idx_scraping_queue_pending ON scraping_queue (created_at)
     WHERE status = 'PENDING';
+
+-- Create system settings table
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Default settings
+INSERT INTO system_settings (key, value)
+VALUES ('self_registration', 'true')
+ON CONFLICT (key) DO NOTHING;

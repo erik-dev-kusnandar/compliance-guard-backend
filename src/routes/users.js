@@ -72,7 +72,7 @@ router.get('/me', async (req, res) => {
  *       401:
  *         description: Unauthorized - invalid or missing token
  */
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT id, name, email, role, status, created_at FROM users ORDER BY created_at DESC'
@@ -144,6 +144,11 @@ router.post('/', requireAdmin, async (req, res) => {
 
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required.' });
+    }
+
+    const validRoles = ['Admin', 'Analyst', 'Viewer'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: `Invalid role "${role}". Must be one of: ${validRoles.join(', ')}` });
     }
 
     // Check if user already exists

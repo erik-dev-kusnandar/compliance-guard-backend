@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../config/db');
-const { verifyJWT } = require('../middleware/auth');
+const { verifyJWT, requireRole } = require('../middleware/auth');
 const { searchGoogleAPI, validateGoogleCredentials } = require('../services/google-api');
 const { searchGoogleMimic } = require('../services/google-mimic');
 
@@ -124,7 +124,7 @@ async function upsertTargetUrl(client, searchQuery, targetUrl, method) {
  *       401:
  *         description: Unauthorized - invalid or missing token
  */
-router.post('/', async (req, res) => {
+router.post('/', requireRole('Admin', 'Analyst'), async (req, res) => {
   try {
     const { keyword, pages = 1, method = 'API', headless = false, proxy = null } = req.body;
 
@@ -302,7 +302,7 @@ router.get('/', async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/clear-completed', async (req, res) => {
+router.delete('/clear-completed', requireRole('Admin', 'Analyst'), async (req, res) => {
   try {
     const result = await pool.query(
       `DELETE FROM scraping_queue WHERE status IN ('COMPLETED', 'FAILED')`
@@ -335,7 +335,7 @@ router.delete('/clear-completed', async (req, res) => {
  *       404:
  *         description: Task not found
  */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireRole('Admin', 'Analyst'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(

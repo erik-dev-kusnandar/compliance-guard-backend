@@ -31,7 +31,7 @@ const options = {
             id: { type: 'integer', example: 1 },
             name: { type: 'string', example: 'John Doe' },
             email: { type: 'string', format: 'email', example: 'john@example.com' },
-            role: { type: 'string', enum: ['Admin', 'Analyst'], example: 'Analyst' },
+            role: { type: 'string', enum: ['Admin', 'Analyst', 'Viewer'], example: 'Analyst' },
             status: { type: 'string', enum: ['Active', 'Inactive'], example: 'Active' },
             created_at: { type: 'string', format: 'date-time' },
           },
