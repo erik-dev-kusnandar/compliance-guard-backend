@@ -2,3 +2,6 @@ node_modules/
 .env
 storage/screenshots/*.png
 nul
+package-lock.json
+yarn.lock
+pnpm-lock.yaml

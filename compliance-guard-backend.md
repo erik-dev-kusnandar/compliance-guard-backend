@@ -59,3 +59,20 @@ ADDITIONAL COMPATIBILITY REQUIREMENTS (For Frontend Integration):
   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/compliance_guard
   JWT_SECRET=your_super_secret_jwt_key_here
   NODE_ENV=development
+
+
+  ---------------
+
+  Done. Perubahan di worker:
+1. Install playwright-stealth - anti-detection jauh lebih kuat
+2. Browser args - tambah --disable-blink-features=AutomationControlled
+3. Request headers - tambah Sec-Fetch-* headers seperti browser asli
+4. **waitUntil: 'domcontentloaded'** - lebih stabil dari networkidle`
+Restart worker agar perubahan berlaku:
+cd compliance-guard-backend
+npm run worker
+Note: Google reCAPTCHA sangat agresif. Bahkan dengan stealth yang lebih baik, Google masih bisa detect bot berdasarkan:
+- IP address (datacenter IP vs residential)
+- Behavioral fingerprinting
+- TLS fingerprint
+Untuk production, butuh CAPTCHA solving service atau rotating residential proxy. Untuk development/testing, stealth improvement ini seharusnya membantu mengurangi frequency CAPTCHA.

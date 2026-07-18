@@ -6,8 +6,11 @@ require('dotenv').config();
 
 async function initDatabase() {
   // Connect to default postgres database to create our database if needed
+  // Replace database name in URL with 'postgres' for admin connection
+  const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/compliance_guard';
+  const adminDbUrl = dbUrl.replace(/\/[^/]*$/, '/postgres');
   const adminPool = new Pool({
-    connectionString: 'postgresql://postgres:postgres@localhost:5432/compliance_guard',
+    connectionString: adminDbUrl,
   });
 
   try {

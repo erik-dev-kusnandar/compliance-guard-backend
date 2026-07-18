@@ -8,7 +8,8 @@
     "worker": "node src/worker.js",
     "dev": "node src/index.js",
     "dev:worker": "node src/worker.js",
-    "db:init": "node src/db/init.js"
+    "db:init": "node src/db/init.js",
+    "test": "node tests/api.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

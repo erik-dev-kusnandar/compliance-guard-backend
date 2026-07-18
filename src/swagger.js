@@ -43,6 +43,7 @@ const options = {
             search_query: { type: 'string', example: 'compliance regulation - page 1' },
             target_url: { type: 'string', example: 'https://www.google.com/search?q=compliance+regulation&page=1' },
             status: { type: 'string', enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'], example: 'PENDING' },
+            method: { type: 'string', enum: ['API', 'MIMIC', 'HYBRID'], example: 'API', description: 'Search execution mode' },
             created_at: { type: 'string', format: 'date-time' },
           },
         },

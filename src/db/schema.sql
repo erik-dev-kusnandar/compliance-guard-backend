@@ -25,6 +25,7 @@ CREATE TABLE scraping_queue (
     search_query TEXT NOT NULL,
     target_url TEXT UNIQUE NOT NULL,
     status queue_status DEFAULT 'PENDING',
+    method TEXT DEFAULT 'API',
     retry_count INTEGER DEFAULT 0,
     error_message TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
