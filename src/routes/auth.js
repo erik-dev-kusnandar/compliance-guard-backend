@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
@@ -88,6 +89,17 @@ router.post('/register', async (req, res) => {
     res.status(201).json({
       message: 'User registered successfully',
       user: result.rows[0],
+    });
+
+    // Audit: user registered
+    auditLog({
+      userId: result.rows[0].id,
+      userEmail: email,
+      action: 'USER_REGISTER',
+      targetType: 'user',
+      targetId: String(result.rows[0].id),
+      metadata: { name, role: result.rows[0].role },
+      ipAddress: req.ip,
     });
   } catch (err) {
     console.error('Register error:', err);
@@ -188,6 +200,17 @@ router.post('/login', async (req, res) => {
         role: user.role,
         status: user.status,
       },
+    });
+
+    // Audit: successful login
+    auditLog({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'LOGIN',
+      targetType: 'user',
+      targetId: String(user.id),
+      metadata: { role: user.role },
+      ipAddress: req.ip,
     });
   } catch (err) {
     console.error('Login error:', err);

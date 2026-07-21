@@ -1,8 +1,12 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
 
 const SCREENSHOT_DIR = path.join(__dirname, '..', '..', 'storage', 'screenshots');
+const PROFILE_COPY_DIR = path.join(os.tmpdir(), 'compliance-guard-chrome-profile');
+
 if (!fs.existsSync(SCREENSHOT_DIR)) {
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 }
@@ -94,7 +98,6 @@ function getOrganicResultLinks(page) {
       } catch { return true; }
     }
 
-    // Find organic result containers
     const containers = document.querySelectorAll('#rso .g, #rso > div > div');
     for (const container of containers) {
       const anchor = container.querySelector('a[href^="http"]');
@@ -109,7 +112,6 @@ function getOrganicResultLinks(page) {
       }
     }
 
-    // Fallback: all links in #rso
     if (results.length === 0) {
       const resultArea = document.querySelector('#rso');
       if (resultArea) {
@@ -128,14 +130,134 @@ function getOrganicResultLinks(page) {
 }
 
 /**
+ * Find the default Chrome profile directory on Windows.
+ * Tries "Default" first, then "Profile 1", "Profile 2", etc.
+ */
+function findChromeProfileDir() {
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const chromeUserData = path.join(localAppData, 'Google', 'Chrome', 'User Data');
+
+  if (!fs.existsSync(chromeUserData)) {
+    console.log(`[MIMIC] Chrome User Data not found at: ${chromeUserData}`);
+    return null;
+  }
+
+  // Try Default profile first
+  const defaultProfile = path.join(chromeUserData, 'Default');
+  if (fs.existsSync(defaultProfile)) {
+    console.log(`[MIMIC] Found Chrome profile: ${defaultProfile}`);
+    return chromeUserData;
+  }
+
+  // Try Profile 1, Profile 2, etc.
+  for (let i = 1; i <= 5; i++) {
+    const profilePath = path.join(chromeUserData, `Profile ${i}`);
+    if (fs.existsSync(profilePath)) {
+      console.log(`[MIMIC] Found Chrome profile: ${profilePath}`);
+      return chromeUserData;
+    }
+  }
+
+  console.log(`[MIMIC] No Chrome profile found in: ${chromeUserData}`);
+  return null;
+}
+
+/**
+ * Copy Chrome profile to temp directory for Playwright to use.
+ * Only copies essential files to keep it fast.
+ */
+async function copyChromeProfile(srcDir) {
+  const destDir = PROFILE_COPY_DIR;
+
+  // If profile copy already exists and is recent (< 1 hour), reuse it
+  if (fs.existsSync(destDir)) {
+    const stat = fs.statSync(destDir);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs < 60 * 60 * 1000) {
+      console.log(`[MIMIC] Reusing existing profile copy (${Math.round(ageMs / 60000)} min old)`);
+      return destDir;
+    }
+    // Remove stale copy
+    console.log(`[MIMIC] Removing stale profile copy...`);
+    fs.rmSync(destDir, { recursive: true, force: true });
+  }
+
+  console.log(`[MIMIC] Copying Chrome profile from: ${srcDir}`);
+  console.log(`[MIMIC] This may take a moment on first run...`);
+
+  // Copy essential directories/files only
+  const essentialItems = [
+    'Default',
+    'Local State',
+  ];
+
+  fs.mkdirSync(destDir, { recursive: true });
+
+  for (const item of essentialItems) {
+    const srcPath = path.join(srcDir, item);
+    const destPath = path.join(destDir, item);
+
+    if (!fs.existsSync(srcPath)) continue;
+
+    const stat = fs.statSync(srcPath);
+    if (stat.isDirectory()) {
+      copyDirSync(srcPath, destPath, [
+        'Cache', 'Code Cache', 'GPUCache', 'Service Worker',
+        'Session Storage', 'IndexedDB', 'databases',
+      ]);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+
+  const sizeMB = getDirSizeMB(destDir);
+  console.log(`[MIMIC] Profile copied (${sizeMB} MB)`);
+  return destDir;
+}
+
+function copyDirSync(src, dest, excludeDirs = []) {
+  fs.mkdirSync(dest, { recursive: true });
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const entry of entries) {
+    if (excludeDirs.includes(entry.name)) continue;
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath, excludeDirs);
+    } else {
+      try {
+        fs.copyFileSync(srcPath, destPath);
+      } catch (_) {
+        // Skip locked files (like Cookies, etc.)
+      }
+    }
+  }
+}
+
+function getDirSizeMB(dir) {
+  let total = 0;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        total += getDirSizeMB(p);
+      } else {
+        try { total += fs.statSync(p).size; } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return Math.round(total / (1024 * 1024));
+}
+
+/**
  * Full MIMIC workflow:
- * 1. Open google.co.id
- * 2. TYPE keyword in search box → Enter
- * 3. RIGHT CLICK each result → Open in new tab
- * 4. SWITCH to new tab → screenshot
- * 5. CLOSE tab → repeat
- *
- * @returns {Array<{url, screenshotPath, title}>}
+ * 1. Launch Chrome with user profile (or fresh if unavailable)
+ * 2. Open google.co.id
+ * 3. TYPE keyword in search box → Enter
+ * 4. CTRL+CLICK each result → Open in new tab
+ * 5. SWITCH to new tab → wait for full load → screenshot
+ * 6. CLOSE tab → repeat
  */
 async function searchGoogleMimic(keyword, pages = 1, options = {}) {
   const {
@@ -143,18 +265,31 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
     locale = 'id-ID',
     timezone = 'Asia/Jakarta',
     proxy = null,
+    tabDelayMin = 1,
+    tabDelayMax = 3,
   } = options;
 
-  let browser = null;
-  let context;
+  let context = null;
+  let profileDir = null;
   const evidence = [];
 
   try {
     const headlessMode = headless === true;
-    console.log(`[MIMIC] Launching browser (headless: ${headlessMode}, proxy: ${proxy || 'none'})...`);
+    console.log(`[MIMIC] Launching Chrome (headless: ${headlessMode}, proxy: ${proxy || 'none'})...`);
 
-    const launchOptions = {
-      headless: headlessMode,
+    // Try to find and copy Chrome profile
+    const chromeUserDataDir = findChromeProfileDir();
+    if (chromeUserDataDir) {
+      profileDir = await copyChromeProfile(chromeUserDataDir);
+      console.log(`[MIMIC] Using Chrome profile from: ${profileDir}`);
+    } else {
+      console.log(`[MIMIC] No Chrome profile found, using fresh profile`);
+    }
+
+    const contextOptions = {
+      viewport: { width: 1920, height: 1080 },
+      locale,
+      timezoneId: timezone,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -166,38 +301,35 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
       ],
     };
 
-    // Add proxy if provided (e.g. "socks5://127.0.0.1:1080" or "http://user:pass@host:port")
     if (proxy) {
-      const proxyUrl = new URL(proxy);
-      launchOptions.proxy = {
-        server: proxy,
-      };
-      console.log(`[MIMIC] Using proxy: ${proxyUrl.hostname}:${proxyUrl.port}`);
+      contextOptions.proxy = { server: proxy };
+      console.log(`[MIMIC] Using proxy: ${proxy}`);
     }
 
-    browser = await chromium.launch(launchOptions);
+    // Use launchPersistentContext to keep cookies/session between runs
+    if (profileDir) {
+      console.log(`[MIMIC] Launching with persistent context (profile: ${profileDir})...`);
+      context = await chromium.launchPersistentContext(profileDir, {
+        headless: headlessMode,
+        channel: 'chrome',
+        ...contextOptions,
+      });
+    } else {
+      console.log(`[MIMIC] Launching without persistent profile...`);
+      const browser = await chromium.launch({
+        headless: headlessMode,
+        channel: 'chrome',
+        args: contextOptions.args,
+        ...(contextOptions.proxy ? { proxy: contextOptions.proxy } : {}),
+      });
+      context = await browser.newContext({
+        viewport: contextOptions.viewport,
+        locale: contextOptions.locale,
+        timezoneId: contextOptions.timezoneId,
+      });
+    }
 
-    context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-      locale,
-      timezoneId: timezone,
-      extraHTTPHeaders: {
-        'Accept-Language': `${locale},id;q=0.9,en-US;q=0.8,en;q=0.7`,
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-        'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-      },
-    });
-
-    const page = await context.newPage();
+    const page = context.pages()[0] || await context.newPage();
     await page.addInitScript(STEALTH_SCRIPT);
 
     // Step 1: Open google.co.id
@@ -208,7 +340,7 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
 
     // Step 2: Type keyword in search box
     console.log(`[MIMIC] Step 2: Typing "${keyword}" in search box...`);
-    const searchBox = 'textarea[name="q"], input[name="q"], textarea[title="Telusuri"], input[title="Telusuri"]';
+    const searchBox = 'textarea[name="q"], input[name="q"], textarea[title="Telusuri"], input[title="Telusuri"], textarea[title="Search"], input[title="Search"]';
     try {
       await page.waitForSelector(searchBox, { timeout: 10000 });
     } catch (_) {
@@ -245,11 +377,11 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
       return evidence;
     }
 
-    // Pagination loop: process each page of results
+    // Pagination loop
     for (let pageNum = 0; pageNum < pages; pageNum++) {
       console.log(`\n[MIMIC] ===== PAGE ${pageNum + 1}/${pages} =====`);
 
-      // Step 4: Get organic result links from current page
+      // Step 4: Get organic result links
       console.log('[MIMIC] Step 4: Extracting search result links...');
       const results = await getOrganicResultLinks(page);
       console.log(`[MIMIC] Found ${results.length} organic results on page ${pageNum + 1}`);
@@ -260,13 +392,12 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
         break;
       }
 
-      // STEP A: Open ALL result URLs in new background tabs first
+      // STEP A: Open ALL result URLs in new background tabs
       console.log(`[MIMIC] Opening ${results.length} URLs in background tabs...`);
       const tabsBefore = context.pages().length;
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
         try {
-          // Scroll result into view and click with Ctrl to open in new tab
           await page.evaluate((idx) => {
             const containers = document.querySelectorAll('#rso .g, #rso > div > div');
             if (containers[idx]) {
@@ -284,9 +415,9 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
           } else {
             console.log(`[MIMIC]   Link not found for result ${i + 1}, using page.goto fallback`);
             const newPage = await context.newPage();
-            await newPage.goto(result.url, { waitUntil: 'commit', timeout: 30000 }).catch(() => {});
+            await newPage.goto(result.url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
           }
-          await randomDelay(800, 1500);
+          await randomDelay(tabDelayMin * 1000, tabDelayMax * 1000);
         } catch (err) {
           console.error(`[MIMIC]   Failed to open tab ${i + 1}: ${err.message}`);
         }
@@ -296,66 +427,77 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
       const newTabCount = tabsAfter - tabsBefore;
       console.log(`[MIMIC] Opened ${newTabCount} new tabs (from ${tabsBefore} to ${tabsAfter})`);
 
-      // Wait a bit for all tabs to start loading
-      await randomDelay(3000, 5000);
+      // Wait for all tabs to start loading
+      await randomDelay(5000, 8000);
 
-      // STEP B: Collect all new tabs (everything except the Google search page)
+      // STEP B: Collect all new tabs
       const allPages = context.pages();
       const newTabs = allPages.filter(p => p !== page);
       console.log(`[MIMIC] Processing ${newTabs.length} tabs for screenshots...`);
 
-      // STEP C: Visit each tab → wait for full load → screenshot → close
+      // STEP C: Visit each tab → wait → screenshot → close
       for (let i = 0; i < newTabs.length; i++) {
         const tab = newTabs[i];
         const globalIndex = evidence.length + 1;
-        let tabUrl = '';
         try {
-          tabUrl = tab.url();
+          const tabUrl = tab.url();
           console.log(`[MIMIC] Tab ${i + 1}/${newTabs.length} (total #${globalIndex}): ${tabUrl.substring(0, 80)}...`);
 
-          // Bring tab to front
           await tab.bringToFront();
 
-          // Wait for full page load (networkidle = no network activity for 500ms)
+          // Wait for page load — load first, then networkidle
           try {
-            await tab.waitForLoadState('networkidle', { timeout: 30000 });
-            console.log(`[MIMIC]   Page loaded (networkidle)`);
+            await tab.waitForLoadState('load', { timeout: 20000 });
+            console.log(`[MIMIC]   Page load event fired`);
           } catch (_) {
-            console.log(`[MIMIC]   networkidle timeout, falling back to load state`);
-            try {
-              await tab.waitForLoadState('load', { timeout: 10000 });
-            } catch (_) {}
+            console.log(`[MIMIC]   load timeout, continuing...`);
           }
 
-          // Extra wait for JS rendering (SPAs, lazy-loaded images, etc.)
-          await randomDelay(3000, 6000);
-
-          // Scroll down to trigger lazy loading, then back to top
           try {
-            await tab.evaluate(() => {
-              window.scrollTo(0, document.body.scrollHeight / 2);
-            });
+            await tab.waitForLoadState('networkidle', { timeout: 25000 });
+            console.log(`[MIMIC]   Page networkidle reached`);
+          } catch (_) {
+            console.log(`[MIMIC]   networkidle timeout, continuing with current state`);
+          }
+
+          // Extra wait for JS rendering
+          await randomDelay(4000, 7000);
+
+          // Scroll down incrementally to trigger lazy loading
+          try {
+            const scrollHeight = await tab.evaluate(() => document.body.scrollHeight);
+            const viewportHeight = 1080;
+            const steps = Math.min(Math.ceil(scrollHeight / viewportHeight), 5);
+            for (let s = 1; s <= steps; s++) {
+              await tab.evaluate((y) => window.scrollTo({ top: y, behavior: 'smooth' }), s * viewportHeight);
+              await randomDelay(1200, 2000);
+            }
+            await randomDelay(1000, 1500);
+            await tab.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
             await randomDelay(1500, 2500);
-            await tab.evaluate(() => {
-              window.scrollTo(0, 0);
-            });
-            await randomDelay(1000, 2000);
           } catch (_) {}
 
-          // Screenshot the fully loaded page
+          // Screenshot
           const screenshotFilename = `evidence_mimic_${Date.now()}_${globalIndex}.png`;
           const screenshotPath = path.join(SCREENSHOT_DIR, screenshotFilename);
           await tab.screenshot({ path: screenshotPath, fullPage: true });
+
+          // Compute SHA-256 hash of the screenshot file
+          let sha256Hash = null;
+          try {
+            const fileBuffer = fs.readFileSync(screenshotPath);
+            sha256Hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+          } catch (_) {}
 
           const relativePath = `/storage/screenshots/${screenshotFilename}`;
           evidence.push({
             url: tab.url(),
             screenshotPath: relativePath,
+            sha256Hash,
             title: await tab.title(),
           });
           console.log(`[MIMIC]   Screenshot saved: ${relativePath}`);
 
-          // Close the tab
           await tab.close();
           console.log(`[MIMIC]   Tab closed`);
           await randomDelay(500, 1000);
@@ -365,14 +507,13 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
         }
       }
 
-      // Navigate to next page of Google results (if not last page)
+      // Navigate to next page of results
       if (pageNum < pages - 1) {
         console.log(`[MIMIC] Navigating to next page of results...`);
         await randomDelay(2000, 4000);
 
-        // Make sure we're back on the Google search page
         const currentPages = context.pages();
-        const googlePage = currentPages.find(p => p.url().includes('google.co.id/search'));
+        const googlePage = currentPages.find(p => p.url().includes('google'));
         if (googlePage) {
           await googlePage.bringToFront();
         }
@@ -395,10 +536,7 @@ async function searchGoogleMimic(keyword, pages = 1, options = {}) {
     console.log(`[MIMIC] Done! Captured ${evidence.length} screenshots total`);
   } finally {
     if (context) {
-      await context.close();
-    }
-    if (browser) {
-      await browser.close();
+      await context.close().catch(() => {});
     }
   }
 

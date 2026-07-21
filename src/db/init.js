@@ -4,21 +4,15 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+const RESET = process.argv.includes('--reset');
+
 async function initDatabase() {
-  // Connect to default postgres database to create our database if needed
-  // Replace database name in URL with 'postgres' for admin connection
   const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/compliance_guard';
   const adminDbUrl = dbUrl.replace(/\/[^/]*$/, '/postgres');
-  const adminPool = new Pool({
-    connectionString: adminDbUrl,
-  });
+  const adminPool = new Pool({ connectionString: adminDbUrl });
 
   try {
-    // Check if compliance_guard database exists
-    const dbCheck = await adminPool.query(
-      "SELECT 1 FROM pg_database WHERE datname = 'compliance_guard'"
-    );
-
+    const dbCheck = await adminPool.query("SELECT 1 FROM pg_database WHERE datname = 'compliance_guard'");
     if (dbCheck.rows.length === 0) {
       await adminPool.query('CREATE DATABASE compliance_guard');
       console.log('Database "compliance_guard" created successfully');
@@ -32,21 +26,27 @@ async function initDatabase() {
     await adminPool.end();
   }
 
-  // Connect to compliance_guard database
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-  });
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
   try {
-    // Run schema
-    const schemaSQL = fs.readFileSync(
-      path.join(__dirname, 'schema.sql'),
-      'utf8'
-    );
-    await pool.query(schemaSQL);
-    console.log('Schema applied successfully');
+    if (RESET) {
+      console.log('\n⚠️  RESET MODE — dropping all tables!\n');
+      const dropSQL = fs.readFileSync(
+        path.join(__dirname, 'schema.sql'),
+        'utf8'
+      );
+      await pool.query(dropSQL);
+      console.log('Schema reset applied successfully');
+    } else {
+      const safeSQL = fs.readFileSync(
+        path.join(__dirname, 'schema-safe.sql'),
+        'utf8'
+      );
+      await pool.query(safeSQL);
+      console.log('Schema applied (safe mode — no data dropped)');
+    }
 
-    // Seed admin user with proper bcrypt hash
+    // Seed admin user
     const adminPassword = 'admin123';
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(adminPassword, salt);

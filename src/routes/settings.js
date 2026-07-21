@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../config/db');
 const { verifyJWT, requireRole } = require('../middleware/auth');
+const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
@@ -40,6 +41,17 @@ router.put('/', verifyJWT, requireRole('Admin'), async (req, res) => {
       );
     }
     res.json({ message: 'Settings updated successfully.' });
+
+    // Audit: settings updated
+    auditLog({
+      userId: req.user.id,
+      userEmail: req.user.email,
+      action: 'SETTINGS_UPDATE',
+      targetType: 'settings',
+      targetId: null,
+      metadata: { keys: Object.keys(settings) },
+      ipAddress: req.ip,
+    });
   } catch (err) {
     console.error('Update settings error:', err);
     res.status(500).json({ error: 'Internal server error.' });

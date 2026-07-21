@@ -8,6 +8,10 @@ const authRoutes = require('./routes/auth');
 const taskRoutes = require('./routes/tasks');
 const userRoutes = require('./routes/users');
 const settingsRoutes = require('./routes/settings');
+const auditRoutes = require('./routes/audit');
+const evidenceRoutes = require('./routes/evidence');
+const scheduledTaskRoutes = require('./routes/scheduled-tasks');
+const { loadScheduledTasks } = require('./services/scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,6 +37,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/audit', auditRoutes);
+app.use('/api/evidence', evidenceRoutes);
+app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 
 /**
  * @swagger
@@ -65,9 +72,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error.' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Compliance Guard API server running on port ${PORT}`);
   console.log(`Screenshots served from: /storage`);
+  try {
+    await loadScheduledTasks();
+  } catch (err) {
+    console.error('Failed to load scheduled tasks:', err.message);
+  }
 });
 
 module.exports = app;

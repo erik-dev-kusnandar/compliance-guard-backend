@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const { verifyJWT, requireAdmin } = require('../middleware/auth');
+const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
@@ -172,6 +173,17 @@ router.post('/', requireAdmin, async (req, res) => {
       message: 'User created successfully',
       user: result.rows[0],
     });
+
+    // Audit: user created by admin
+    auditLog({
+      userId: req.user.id,
+      userEmail: req.user.email,
+      action: 'USER_CREATE',
+      targetType: 'user',
+      targetId: String(result.rows[0].id),
+      metadata: { name, email, role },
+      ipAddress: req.ip,
+    });
   } catch (err) {
     console.error('Create user error:', err);
     res.status(500).json({ error: 'Internal server error.' });
@@ -243,6 +255,17 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     res.json({
       message: 'User deleted successfully',
       user: result.rows[0],
+    });
+
+    // Audit: user deleted by admin
+    auditLog({
+      userId: req.user.id,
+      userEmail: req.user.email,
+      action: 'USER_DELETE',
+      targetType: 'user',
+      targetId: id,
+      metadata: { deletedName: result.rows[0].name, deletedEmail: result.rows[0].email },
+      ipAddress: req.ip,
     });
   } catch (err) {
     console.error('Delete user error:', err);
